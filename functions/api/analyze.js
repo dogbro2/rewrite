@@ -3,6 +3,8 @@
  * Statistical Perplexity, Burstiness & AI Probability Analyzer
  */
 
+import { corsFor } from '../lib/guard.js';
+
 const BANNED_AI_WORDS = [
   'delve', 'testament', 'tapestry', 'beacon', 'multifaceted', 'crucial', 
   'paramount', 'realm', 'moreover', 'furthermore', 'in conclusion', 'embark', 
@@ -14,12 +16,12 @@ const BANNED_AI_WORDS = [
 ];
 
 export async function onRequestPost(context) {
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
+  const { request, env } = context;
+  const corsHeaders = corsFor(request, {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Content-Type': 'application/json'
-  };
+  }, env);
 
   try {
     const { text = '' } = await context.request.json();
@@ -68,13 +70,13 @@ export async function onRequestPost(context) {
   }
 }
 
-export async function onRequestOptions() {
+export async function onRequestOptions({ request, env }) {
   return new Response(null, {
     status: 204,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
+    headers: corsFor(request, {
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type'
-    }
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400'
+    }, env)
   });
 }

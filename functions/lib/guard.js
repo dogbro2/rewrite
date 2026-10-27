@@ -12,7 +12,7 @@ const WINDOW_MS = 10 * 60 * 1000;
 const MAX_HITS = 30;
 const hits = new Map();
 
-export function allowedOrigin(origin, extraOrigins = []) {
+export function allowedOrigin(origin, extraOrigins = [], requestUrl) {
   if (!origin) return '';
   try {
     const u = new URL(origin);
@@ -23,14 +23,22 @@ export function allowedOrigin(origin, extraOrigins = []) {
       return '';
     }
     if (u.protocol !== 'https:') return '';
+    if (requestUrl) {
+      try {
+        if (new URL(requestUrl).origin === u.origin) return u.origin;
+      } catch (_) {}
+    }
     if (h === 'trujillomingorance.com' || h.endsWith('.trujillomingorance.com')) return u.origin;
     if (h.endsWith('.pages.dev')) return u.origin;
+    if (h.endsWith('.netlify.app') || h.endsWith('.netlify.com')) return u.origin;
     if (h.endsWith('.monkeycode-ai.live') || h.endsWith('.monkeycode-ai.online')) return u.origin;
     for (const raw of extraOrigins) {
+      const value = String(raw).trim();
+      if (!value) continue;
+      if (value.startsWith('*.') && (h === value.slice(2) || h.endsWith(value.slice(1)))) return u.origin;
       try {
-        const allowed = new URL(String(raw).trim());
+        const allowed = new URL(value);
         if (allowed.origin === u.origin) return u.origin;
-        if (String(raw).trim().startsWith('*.') && h.endsWith(String(raw).trim().slice(1))) return u.origin;
       } catch (_) {}
     }
   } catch (_) {}
@@ -39,16 +47,24 @@ export function allowedOrigin(origin, extraOrigins = []) {
 
 function extraOriginsFrom(env) {
   const raw = env && env.ALLOWED_ORIGINS;
-  return raw ? String(raw).split(',').map((s) => s.trim()).filter(Boolean) : [];
+  const listed = raw ? String(raw).split(',').map((s) => s.trim()).filter(Boolean) : [];
+  const auto = [];
+  if (env) {
+    for (const key of ['URL', 'DEPLOY_PRIME_URL', 'DEPLOY_URL']) {
+      if (env[key]) auto.push(String(env[key]).trim());
+    }
+  }
+  return listed.concat(auto);
 }
 
 export function corsFor(request, extra = {}, env) {
-  const o = allowedOrigin(request.headers.get('Origin'), extraOriginsFrom(env));
+  const o = allowedOrigin(request.headers.get('Origin'), extraOriginsFrom(env), request.url);
   return { ...(o ? { 'Access-Control-Allow-Origin': o } : {}), Vary: 'Origin', ...extra };
 }
 
 export function rateLimited(request, now = Date.now()) {
-  const ip = request.headers.get('CF-Connecting-IP') || 'local';
+  const forwarded = (request.headers.get('x-forwarded-for') || '').split(',')[0].trim();
+  const ip = request.headers.get('CF-Connecting-IP') || request.headers.get('x-nf-client-connection-ip') || forwarded || 'local';
   const list = (hits.get(ip) || []).filter((t) => now - t < WINDOW_MS);
   if (list.length >= MAX_HITS) { hits.set(ip, list); return Math.ceil((WINDOW_MS - (now - list[0])) / 1000); }
   list.push(now);
@@ -59,7 +75,7 @@ export function rateLimited(request, now = Date.now()) {
 
 // Devuelve una Response de rechazo o null si la petición puede seguir.
 export async function guard(request, headers, env) {
-  if (!allowedOrigin(request.headers.get('Origin'), extraOriginsFrom(env))) {
+  if (!allowedOrigin(request.headers.get('Origin'), extraOriginsFrom(env), request.url)) {
     return new Response(JSON.stringify({ error: 'Origen no permitido.' }), { status: 403, headers });
   }
   const wait = rateLimited(request);

@@ -22,6 +22,26 @@ test('origen: desarrollo local y previsualización de la plataforma', () => {
   assert.equal(allowedOrigin('http://localhost.evil.example'), '');
 });
 
+test('origen: vistas previas de Netlify', () => {
+  assert.equal(allowedOrigin('https://rewrite.netlify.app'), 'https://rewrite.netlify.app');
+  assert.equal(allowedOrigin('https://deploy-preview-12--rewrite.netlify.app'), 'https://deploy-preview-12--rewrite.netlify.app');
+  assert.equal(allowedOrigin('https://site.netlify.com'), 'https://site.netlify.com');
+  assert.equal(allowedOrigin('https://evilnetlify.app'), '');
+  assert.equal(allowedOrigin('http://rewrite.netlify.app'), '');
+});
+
+test('origen: ALLOWED_ORIGINS con comodín y URL exacta', () => {
+  assert.equal(allowedOrigin('https://rewrite.example.com', ['*.example.com']), 'https://rewrite.example.com');
+  assert.equal(allowedOrigin('https://rewrite.example.com', ['https://rewrite.example.com']), 'https://rewrite.example.com');
+  assert.equal(allowedOrigin('https://other.example.com', ['https://rewrite.example.com']), '');
+  assert.equal(allowedOrigin('https://example.com.evil.test', ['*.example.com']), '');
+});
+
+test('origen: misma origen que la petición (dominio personalizado)', () => {
+  assert.equal(allowedOrigin('https://rewrite.example.com', [], 'https://rewrite.example.com/api/rewrite'), 'https://rewrite.example.com');
+  assert.equal(allowedOrigin('https://evil.example', [], 'https://rewrite.example.com/api/rewrite'), '');
+});
+
 test('guard: 403 sin origen válido, 429 al pasar el tope (público)', async () => {
   _resetForTests();
   assert.equal((await guard(req(null), {}, {})).status, 403);
@@ -31,6 +51,21 @@ test('guard: 403 sin origen válido, 429 al pasar el tope (público)', async () 
   assert.equal(r.status, 429);
   assert.ok(Number(r.headers.get('Retry-After')) > 0);
   assert.equal(await guard(req('https://rewrite.trujillomingorance.com', '8.8.8.8'), {}, {}), null);
+});
+
+test('ritmo: usa x-nf-client-connection-ip y x-forwarded-for', () => {
+  _resetForTests();
+  const nf = (ip) => new Request('https://rewrite.netlify.app/api/rewrite', {
+    method: 'POST',
+    headers: { Origin: 'https://rewrite.netlify.app', 'x-nf-client-connection-ip': ip }
+  });
+  for (let i = 0; i < 30; i++) assert.equal(rateLimited(nf('203.0.113.9')), 0);
+  assert.ok(rateLimited(nf('203.0.113.9')) > 0);
+  const fwd = new Request('https://rewrite.netlify.app/api/rewrite', {
+    method: 'POST',
+    headers: { Origin: 'https://rewrite.netlify.app', 'x-forwarded-for': '203.0.113.10, 10.0.0.1' }
+  });
+  assert.equal(rateLimited(fwd), 0);
 });
 
 test('ventana deslizante: libera tras 10 minutos', () => {

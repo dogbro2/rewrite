@@ -36,8 +36,8 @@
 | 層級 | 技術 |
 |---|---|
 | 前端 | HTML、CSS 與 JavaScript,無框架、無建置流程(`public/`) |
-| 託管 | **Cloudflare Pages**(靜態檔案 + `_headers` 標頭) |
-| API | **Cloudflare Pages Functions**(`functions/`),僅在 `/api/*`(`_routes.json`) |
+| 託管 | **Cloudflare Pages**(靜態檔案 + `_headers` 標頭)或 **Netlify**(見 `netlify` 分支) |
+| API | **Cloudflare Pages Functions**(`functions/`)或 **Netlify Functions**(`netlify/functions/api.js`),僅在 `/api/*` |
 | AI | **Groq**(主要):GPT-OSS 120B,以 GPT-OSS 20B 與 Qwen3 為備援(短文字校對用 GPT-OSS 20B)。**Workers AI**(Llama 3.1 8B)僅作為最後備援 |
 | 登入 | 以 `APP_SECRET` 或 `APP_PASSWORD` 簽署的 HMAC-SHA256 JWT,存於瀏覽器並以 Bearer 標頭送出 |
 
@@ -107,6 +107,7 @@ npm test
 | `npm run dev` | 以 Wrangler 在本機啟動 Pages + Functions |
 | `npm test` | 執行測試(`tests/*.test.mjs`、`tests/*.test.js`) |
 | `npm run deploy` | `wrangler pages deploy public --project-name=rewrite-ai` |
+| `npm run dev:netlify` | 以 Netlify CLI 在本機啟動靜態檔 + Functions |
 
 ## 部署
 
@@ -132,6 +133,27 @@ npm test
 npx wrangler pages deploy public --project-name=rewrite-ai
 ```
 
+### 使用 Netlify(此分支)
+
+`main` 維持 Cloudflare Pages。此 `netlify` 分支把同一套 `functions/` 接到 Netlify Functions 2.0(`netlify/functions/api.js` 對應 `/api/*`),靜態檔仍從 `public/` 發布。
+
+1. 在 [Netlify](https://app.netlify.com/) 選擇 **Add new site → Import an existing project**,連到此儲存庫。
+2. **Branch to deploy:** `netlify`(不要用 `main`,以免覆蓋 Cloudflare 部署)。
+3. Build settings:
+   - Build command: 留空(或 `true`)
+   - Publish directory: `public`
+4. 在 **Site configuration → Environment variables** 設定與下方相同的 Secret(`GROQ_API_KEY`、`APP_USERNAME`、`APP_PASSWORD` 等)。
+5. Deploy。之後每次 push 到 `netlify` 會部署正式環境; Pull Request 會產生 `*.netlify.app` 預覽。
+6. 自訂網域請在 **Domain management** 綁定。CORS 會自動允許 `*.netlify.app`、`URL` / `DEPLOY_PRIME_URL` / `DEPLOY_URL`,以及 `ALLOWED_ORIGINS`。
+
+本機:
+
+```bash
+npx netlify-cli dev
+```
+
+Netlify 沒有 Workers AI binding。未設定 Groq 或外部 API 時,改寫會落到規則引擎備援。
+
 ## 環境變數與綁定
 
 | 名稱 | 類型 | 必填 | 預設值 | 用途 |
@@ -146,7 +168,7 @@ npx wrangler pages deploy public --project-name=rewrite-ai
 | `AI` | Workers AI binding | 否 | 無 | 最後備援用的 Workers AI binding |
 | `BOT_MEMORY` | KV binding | 否 | 無 | 保留(與其他網站共用) |
 
-允許來源(不需設定即接受):`*.dogbro.store`、`*.pages.dev`、`*.230603.xyz`、`*.dogbro.link`,以及本機開發的 `localhost` / `127.0.0.1`。
+允許來源(不需設定即接受):`*.trujillomingorance.com`、`*.pages.dev`、`*.netlify.app`、`*.netlify.com`,以及本機開發的 `localhost` / `127.0.0.1`。Netlify 部署時也會自動允許 `URL`、`DEPLOY_PRIME_URL`、`DEPLOY_URL`。`ALLOWED_ORIGINS` 支援完整 URL 與 `*.example.com` 萬用字元。
 
 ## 專案結構
 
@@ -154,6 +176,8 @@ npx wrangler pages deploy public --project-name=rewrite-ai
 public/              index.html, 404.html, _headers, _routes.json, css/, js/ (app, i18n, flags), img/
 functions/api/       rewrite.js, humanize.js, tools.js, analyze.js, auth/, admin/
 functions/lib/       guard.js (origin, size, rate), auth.js (JWT), customApi.js (external API)
+netlify/functions/   api.js (Netlify Functions 2.0 轉接 /api/*)
+netlify.toml         Netlify 發布與 Functions 設定
 tests/               node --test 測試
 docs/                banner 與截圖
 ```

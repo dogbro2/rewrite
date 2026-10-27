@@ -1,0 +1,14 @@
+[build]
+  publish = "public"
+  command = "true"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  included_files = ["functions/**"]
+
+[functions."api"]
+  timeout = 26
