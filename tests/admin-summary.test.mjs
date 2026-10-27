@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { onRequest } from '../functions/api/admin/summary.js';
 import { issueToken } from '../functions/lib/auth.js';
 
-const env = { GROQ_API_KEY: 'secret-value', AI: {}, ENVIRONMENT: 'production', APP_USERNAME: 'admin', APP_PASSWORD: 'secret' };
+const env = { GROQ_API_KEY: 'secret-value', ENVIRONMENT: 'production', APP_USERNAME: 'admin', APP_PASSWORD: 'secret' };
 const req = (auth, o = 'https://rewrite.trujillomingorance.com') => new Request('https://rewrite.trujillomingorance.com/api/admin/summary', { headers: { ...(auth ? { Authorization: auth } : {}), Origin: o } });
 
 test('403 sin autenticación configurada y con token inválido', async () => {

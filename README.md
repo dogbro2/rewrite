@@ -22,7 +22,7 @@
 - **改寫:** 四種風格(自然、學術、淺白與摘要)。保留數字、名稱、連結與 Markdown。若結果太短(少於原文詞數的 85%),會用更嚴格的指示重新生成一次。
 - **校對:** 拼字、文法與風格。300 字以內的文字使用小型快速模型(Groq 上的 GPT-OSS 20B)。
 - **翻譯:** 西班牙文、英文、正體中文、加泰隆尼亞文、法文、德文,義大利文與葡萄牙文。
-- **額外工具:** 語氣、標題鉤子、連貫性與文字 AI 稽核(使用 Groq;失敗時改用 Workers AI 備援)。
+- **額外工具:** 語氣、標題鉤子、連貫性與文字 AI 稽核(使用 Groq)。
 - **串流輸出:** 結果會在生成過程中即時顯示(SSE)。
 - **風格變化:** 在瀏覽器中比較原文與結果的統計面板(長度、句數與變化度)。
 - **多語介面(8 種語言):** 西班牙文、英文、正體中文、加泰隆尼亞文、法文、德文、義大利文與葡萄牙文,附自製 SVG 旗幟。會記住你選擇的語言。
@@ -36,9 +36,9 @@
 | 層級 | 技術 |
 |---|---|
 | 前端 | HTML、CSS 與 JavaScript,無框架、無建置流程(`public/`) |
-| 託管 | **Cloudflare Pages**(靜態檔案 + `_headers` 標頭)或 **Netlify**(見 `netlify` 分支) |
-| API | **Cloudflare Pages Functions**(`functions/`)或 **Netlify Functions**(`netlify/functions/api.js`),僅在 `/api/*` |
-| AI | **Groq**(主要):GPT-OSS 120B,以 GPT-OSS 20B 與 Qwen3 為備援(短文字校對用 GPT-OSS 20B)。**Workers AI**(Llama 3.1 8B)僅作為最後備援 |
+| 託管 | **Netlify**(靜態檔案 `public/` + Functions 2.0) |
+| API | **Netlify Functions**(`netlify/functions/api.js` 轉接既有 `functions/`),僅在 `/api/*` |
+| AI | **Groq**(主要):GPT-OSS 120B,以 GPT-OSS 20B 與 Qwen3 為備援(短文字校對用 GPT-OSS 20B)。失敗時使用規則引擎,無 Workers AI |
 | 登入 | 以 `APP_SECRET` 或 `APP_PASSWORD` 簽署的 HMAC-SHA256 JWT,存於瀏覽器並以 Bearer 標頭送出 |
 
 ## 架構
@@ -46,19 +46,19 @@
 ```mermaid
 flowchart LR
   U["User"]
-  subgraph Cloudflare
-    P["Pages HTML CSS JS"]
+  subgraph Netlify
+    P["Static public HTML CSS JS"]
     F["Functions /api/*"]
-    AI["Workers AI Llama 3.1 8B"]
   end
   G["Groq GPT-OSS 120B 20B Qwen3"]
   X["External API OpenAI-compatible"]
+  R["Rule-based local fallback"]
   U -->|static| P
   U -->|"/api/rewrite SSE"| F
   U -->|"/api/tools"| F
   F -->|"GROQ_API_KEY"| G
   F -->|"user Base URL + key"| X
-  F -.->|"if Groq fails"| AI
+  F -.->|"if Groq fails"| R
 ```
 
 | 路由 | 用途 |
@@ -87,55 +87,30 @@ flowchart LR
 - **Base URL**(例如 `https://api.openai.com/v1`)、**API Key** 與 **Model** 直接在瀏覽器輸入。
 - 設定只儲存在瀏覽器的 `localStorage`,不會寫入儲存庫。
 - 處理文字時,前端會把這些值送到 `/api/rewrite` 或 `/api/tools`;Function 會驗證 URL 為公開 HTTPS 後,才向該供應商發出請求。金鑰永遠不會寫入日誌。
-- 若外部供應商失敗,且伺服器已設定備援(Groq 或 Workers AI),就會改用備援。
+- 若外部供應商失敗,且伺服器已設定 `GROQ_API_KEY`,就會改用 Groq;再失敗則使用規則引擎。
 - 你也可在翻譯目標中選擇正體中文。
 
 ## 本機開發
 
-需求:**Node.js >= 20** 與 `npx wrangler login`(Workers AI 需要帳號)。
-
-若你沒有 Cloudflare 帳號,`wrangler pages dev` 會因為 Workers AI 的遠端 binding 而無法啟動。本機開發請使用 `wrangler.dev.toml`(內容與 `wrangler.toml` 相同,但沒有 `[ai]` 區塊):把它複製到根目錄成為 `wrangler.toml` 後再執行 `npm run dev`;介面上可設定的外部 API 不需要 Workers AI 也能運作。
+需求:**Node.js >= 20**。
 
 ```bash
 git clone https://github.com/detutag/rewrite-ai.git && cd rewrite-ai
-npm run dev
+git checkout netlify
+npm run dev:netlify
 npm test
 ```
 
 | 指令 | 用途 |
 |---|---|
-| `npm run dev` | 以 Wrangler 在本機啟動 Pages + Functions |
-| `npm test` | 執行測試(`tests/*.test.mjs`、`tests/*.test.js`) |
-| `npm run deploy` | `wrangler pages deploy public --project-name=rewrite-ai` |
 | `npm run dev:netlify` | 以 Netlify CLI 在本機啟動靜態檔 + Functions |
+| `npm test` | 執行測試(`tests/*.test.mjs`、`tests/*.test.js`) |
 
 ## 部署
 
-### 使用 Cloudflare 控制台(建議)
-
-1. 登入 Cloudflare 控制台,前往 **Workers & Pages** → **Create** → **Pages** → **Connect to Git**。
-2. 選擇你的儲存庫(例如 `ATM-Software-Labs/rewrite-ai`)與分支(通常是 `main`)。
-3. 在 **Build settings** 設定:
-   - Framework preset: **None**
-   - Build command:**留空**
-   - Build output directory:`public`
-4. 在 **Settings → Environment variables**(Production 與 Preview 各設定一次)加入下方變數與 Secret。
-5. 按 **Save and Deploy**。之後每次 push 到 `main` 會部署正式環境,其他分支會產生預覽。
-6. 前往 **Custom domains** 綁定你的網域(例如 `rewrite.example.com`)。
-7. 在 **Settings → Functions → KV namespace bindings** 加入 `BOT_MEMORY`(選用,保留給其他網站共用)。
-8. 若要使用 Workers AI 作最後備援,在 **Settings → Functions → Workers AI bindings** 加入名為 `AI` 的 binding(需先在帳號啟用 Workers AI)。
-
-> 提示:本專案沒有建置步驟,`public/` 即為靜態輸出;`functions/` 會由 Pages 自動部署為 Functions。
-
-### 使用命令列
-
-```bash
-npx wrangler pages deploy public --project-name=rewrite-ai
-```
-
 ### 使用 Netlify(此分支)
 
-`main` 維持 Cloudflare Pages。此 `netlify` 分支把同一套 `functions/` 接到 Netlify Functions 2.0(`netlify/functions/api.js` 對應 `/api/*`),靜態檔仍從 `public/` 發布。
+`main` 維持 Cloudflare Pages(含 Workers AI 備援)。此 `netlify` 分支不使用 Workers AI:同一套 `functions/` 接到 Netlify Functions 2.0(`netlify/functions/api.js` 對應 `/api/*`),靜態檔從 `public/` 發布。Groq 或外部 API 失敗時改用規則引擎。
 
 1. 在 [Netlify](https://app.netlify.com/) 選擇 **Add new site → Import an existing project**,連到此儲存庫。
 2. **Branch to deploy:** `netlify`(不要用 `main`,以免覆蓋 Cloudflare 部署)。
@@ -152,21 +127,16 @@ npx wrangler pages deploy public --project-name=rewrite-ai
 npx netlify-cli dev
 ```
 
-Netlify 沒有 Workers AI binding。未設定 Groq 或外部 API 時,改寫會落到規則引擎備援。
-
 ## 環境變數與綁定
 
 | 名稱 | 類型 | 必填 | 預設值 | 用途 |
 |---|---|---|---|---|
-| `GROQ_API_KEY` | Secret | 建議 | 無 | Groq 金鑰,作為改寫、校對、翻譯與工具的主要供應商。未設定時直接使用備援 |
-| `DEFAULT_MODEL` | 變數 | 否 | `@cf/meta/llama-3.1-8b-instruct-fp8` | Workers AI 備援使用的模型 |
+| `GROQ_API_KEY` | Secret | 建議 | 無 | Groq 金鑰,作為改寫、校對、翻譯與工具的主要供應商。未設定時直接使用規則引擎 |
 | `APP_USERNAME` | 變數 | 否 | 無 | 登入使用者名稱。與 `APP_PASSWORD` 同時設定時才會啟用登入 |
 | `APP_PASSWORD` | Secret | 否 | 無 | 登入密碼。同時也作為未設定 `APP_SECRET` 時的 JWT 簽署金鑰 |
 | `APP_SECRET` | Secret | 否 | `APP_PASSWORD` | 專用的 JWT 簽署金鑰(建議與密碼分開設定) |
 | `ENVIRONMENT` | 變數 | 否 | `production` | 環境名稱,供記錄與除錯使用 |
 | `ALLOWED_ORIGINS` | 變數 | 否 | 無 | 以逗號分隔的額外允許來源,支援 `https://example.com` 與 `*.example.com` |
-| `AI` | Workers AI binding | 否 | 無 | 最後備援用的 Workers AI binding |
-| `BOT_MEMORY` | KV binding | 否 | 無 | 保留(與其他網站共用) |
 
 允許來源(不需設定即接受):`*.trujillomingorance.com`、`*.pages.dev`、`*.netlify.app`、`*.netlify.com`,以及本機開發的 `localhost` / `127.0.0.1`。Netlify 部署時也會自動允許 `URL`、`DEPLOY_PRIME_URL`、`DEPLOY_URL`。`ALLOWED_ORIGINS` 支援完整 URL 與 `*.example.com` 萬用字元。
 

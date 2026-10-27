@@ -1,7 +1,7 @@
 /**
  * Cloudflare Pages Function: /api/rewrite
  * Proxy de streaming para la reescritura de textos
- * Groq LPU fallback ladder + Cloudflare Workers AI
+ * Groq LPU fallback ladder + regla local (sin Workers AI en Netlify)
  * Style.md calibration + sentence-level burstiness
  */
 
@@ -14,7 +14,6 @@ const BANNED_AI_WORDS_ES = BANNED_PHRASES_ES;
 
 // Groq Model Fallback Ladder (Fastest & highest entropy first)
 // Solo modelos disponibles para la clave de Groq (GET /openai/v1/models, oct 2026).
-// Workers AI queda como último recurso para no gastar la cuota de Cloudflare.
 const GROQ_MODEL_LADDER = [
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
@@ -129,15 +128,13 @@ export async function onRequestPost(context) {
       ? buildTranslatePrompts(text, targetLang)
       : buildPrompts(mode, stylePreset, isEnglish, text, styleGuide, calibration);
     const wordCount = text.trim().split(/\s+/).length;
-    // Modelo rápido (8B) para correcciones cortas; 70B para reescribir y traducir
-    const cfModel = (mode === 'corrector' && wordCount <= 300) ? '@cf/meta/llama-3.1-8b-instruct-fast' : (env.DEFAULT_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8');
     // Tope de tokens proporcional al texto (≈2 tokens por palabra +20 % de margen) para que Reescribir no se alargue
     const maxTokens = mode === 'stealth' ? Math.min(3500, Math.max(160, Math.ceil(wordCount * 2.0 * 1.2) + 40)) : 3500;
     const temperature = mode === 'corrector' ? 0.3 : mode === 'translate' ? 0.4 : 0.88;
 
     const effectiveGroqKey = (provider === 'groq' ? apiKey : '') || env.GROQ_API_KEY || '';
 
-    // Groq primero (si hay clave) con su escalera de modelos; Workers AI solo como último recurso
+    // Groq primero (si hay clave) con su escalera de modelos; si falla, motor local
     const groqModel = provider === 'groq'
       ? (model || ((mode === 'corrector' && wordCount <= 300) ? GROQ_FAST_MODEL : ''))
       : ((mode === 'corrector' && wordCount <= 300) ? GROQ_FAST_MODEL : '');
@@ -165,29 +162,8 @@ export async function onRequestPost(context) {
           const groqRes = await callGroqWithLadder(userPrompt, systemPrompt, effectiveGroqKey, groqModel, temperature, maxTokens);
           return sseFromText(stripMarkdown(cleanModelOutput(groqRes.text, isEnglish)), `Groq LPU (${groqRes.model})`, corsFor(request, {}, env));
         } catch (ladderErr) {
-          console.error('Groq ladder failed, using Workers AI:', ladderErr);
+          console.error('Groq ladder failed, using local fallback:', ladderErr);
         }
-      }
-    }
-    if (stream && env.AI) {
-      try {
-        const msgs = [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }];
-        const aiStream = await env.AI.run(cfModel, { messages: msgs, temperature, top_p: 0.95, max_tokens: maxTokens, stream: true });
-        // Reescribir: solo si sale anormalmente truncado (<40 % de palabras), se regenera una vez
-        const inWords = text.replace(/[*#>_`-]+/g, ' ').trim().split(/\s+/).filter(Boolean).length;
-        const lengthCheck = mode === 'stealth' && stylePreset !== 'executive' && inWords >= 40;
-        const retry = lengthCheck ? async (got) => {
-          const targetWords = Math.round(inWords * 0.75);
-          const fix = isEnglish
-            ? 'Your version has only ' + got + ' words and was cut off. Rewrite the ORIGINAL text completely in around ' + targetWords + ' words, keeping all facts, figures, and key ideas in a natural, concise human voice. Return only the text.'
-            : 'Tu versión tiene solo ' + got + ' palabras y quedó incompleta. Vuelve a reescribir el texto ORIGINAL completo en unas ' + targetWords + ' palabras, conservando todos los datos, cifras e ideas clave de forma natural, concisa y humana. Devuelve solo el texto.';
-          return env.AI.run(cfModel, { messages: msgs.concat([{ role: 'user', content: fix }]), temperature: 0.7, top_p: 0.95, max_tokens: Math.min(3500, Math.ceil(inWords * 2.0) + 60), stream: true });
-        } : null;
-        return new Response(workersAiToSse(aiStream, cfModel, retry ? { minWords: Math.round(inWords * 0.40), retry } : null, isEnglish), {
-          headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no', ...corsFor(request, {}, env) }
-        });
-      } catch (e) {
-        console.error('Workers AI stream failed, falling back:', e);
       }
     }
     // --- SYNCHRONOUS MODE ---
@@ -211,7 +187,7 @@ export async function onRequestPost(context) {
         humanizedText = groqRes.text;
         usedProvider = `Groq LPU (${groqRes.model})`;
       } catch (groqErr) {
-        console.error('Groq ladder failed, using Workers AI:', groqErr);
+        console.error('Groq ladder failed, using local fallback:', groqErr);
         groqFailed = true;
       }
     }
@@ -220,31 +196,6 @@ export async function onRequestPost(context) {
     } else if (provider === 'openai' && apiKey) {
       humanizedText = await callOpenAI(userPrompt, systemPrompt, apiKey, model || 'gpt-4o-mini');
       usedProvider = 'OpenAI';
-    } else if (env.AI) {
-      const modelName = cfModel;
-      let aiResponse;
-      try {
-        aiResponse = await env.AI.run(modelName, {
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: mode === 'corrector' ? 0.3 : 0.7,
-          top_p: 0.95,
-          max_tokens: 3500
-        });
-      } catch (aiErr) {
-        aiResponse = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: mode === 'corrector' ? 0.3 : 0.7,
-          max_tokens: 3500
-        });
-      }
-      humanizedText = aiResponse.response || aiResponse.text || '';
-      usedProvider = `Cloudflare Workers AI (${modelName})`;
     } else if (effectiveGroqKey && !groqFailed) {
       const groqRes = await callGroqWithLadder(userPrompt, systemPrompt, effectiveGroqKey, groqModel, temperature, maxTokens);
       humanizedText = groqRes.text;
@@ -834,52 +785,4 @@ function buildTranslatePrompts(text, target) {
     systemPrompt: 'Eres un traductor profesional. Detecta el idioma de origen y traduce al ' + name + ' de forma natural y fluida, como lo escribiría un nativo, sin calcos. Conserva el sentido, los datos, las cifras, las unidades y los nombres propios. Devuelve texto plano en párrafos: sin Markdown (**, #, *, ---); los títulos pasan a ser frases de apertura y las listas, frases. Devuelve solo la traducción, sin notas ni explicaciones.',
     userPrompt: 'Traduce al ' + name + ' el texto entre <texto> y </texto>:\n\n<texto>\n' + text + '\n</texto>'
   };
-}
-
-// Convierte el stream SSE de Workers AI ({"response":"..."}) en el formato de la app ({"chunk":"..."}).
-// Con opts.retry: al terminar, si el texto tiene menos de opts.minWords palabras, envía {reset:true} y emite un segundo intento.
-function workersAiToSse(aiStream, model, opts, isEnglish = false) {
-  const enc = new TextEncoder();
-  const send = (ctl, obj) => ctl.enqueue(enc.encode('data: ' + JSON.stringify(obj) + '\n\n'));
-  async function pump(stream, ctl) {
-    const reader = stream.getReader(), dec = new TextDecoder();
-    let buf = '', acc = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n'); buf = lines.pop();
-      for (const raw of lines) {
-        const l = raw.trim();
-        if (!l.startsWith('data:')) continue;
-        const d = l.slice(5).trim();
-        if (!d || d === '[DONE]') continue;
-        try {
-          const j = JSON.parse(d);
-          const piece = typeof j.response === 'string' ? j.response : '';
-          if (piece) { acc += piece; send(ctl, { chunk: piece }); }
-        } catch (_) {}
-      }
-    }
-    return acc;
-  }
-  return new ReadableStream({
-    async start(ctl) {
-      try {
-        let finalAcc = await pump(aiStream, ctl);
-        const words = finalAcc.trim().split(/\s+/).filter(Boolean).length;
-        let attempts = 1;
-        if (opts && opts.retry && words < opts.minWords) {
-          send(ctl, { reset: true, reason: 'length', words });
-          finalAcc = await pump(await opts.retry(words), ctl);
-          attempts = 2;
-        }
-        const cleaned = stripMarkdown(cleanModelOutput(finalAcc, isEnglish));
-        send(ctl, { done: true, model, attempts, text: cleaned });
-      } catch (e) {
-        send(ctl, { error: 'stream' });
-      }
-      ctl.close();
-    }
-  });
 }
